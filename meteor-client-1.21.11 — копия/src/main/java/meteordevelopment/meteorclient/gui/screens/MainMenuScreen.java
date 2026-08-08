@@ -191,13 +191,13 @@ public class MainMenuScreen extends Screen {
         boolean hoveredLogo = isHovered(mouseX, mouseY, halfOfWidth - 120, halfOfHeight - 130, 210, 50);
         String logo = title;
         int logoW = mc.textRenderer.getWidth(logo);
-        context.getMatrices().push();
-        context.getMatrices().scale(2.0f, 2.0f, 1.0f);
+        context.getMatrices().pushMatrix();
+        context.getMatrices().scale(2.0f, 2.0f);
         context.drawText(mc.textRenderer, logo,
             (halfOfWidth - logoW) / 2,
             (halfOfHeight - 129) / 2,
             hoveredLogo ? 0xE6FFFFFF : 0xB4FFFFFF, false);
-        context.getMatrices().pop();
+        context.getMatrices().popMatrix();
 
         // Подсказка: клик по названию открывает окно смены названия
         String hint = "\u00abclick to rename\u00bb";

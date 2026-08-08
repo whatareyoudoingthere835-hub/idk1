@@ -18,7 +18,10 @@ import meteordevelopment.meteorclient.gui.widgets.pressable.WButton;
 public class EditMainMenuTitleScreen extends WindowScreen {
     public EditMainMenuTitleScreen(GuiTheme theme) {
         super(theme, "Edit main menu title");
+    }
 
+    @Override
+    public void initWidgets() {
         WTable table = add(theme.table()).widget();
 
         table.add(theme.label("Title: "));
