@@ -7,8 +7,11 @@ package meteordevelopment.meteorclient.gui.screens;
 
 import meteordevelopment.meteorclient.MeteorClient;
 import meteordevelopment.meteorclient.addons.AddonManager;
+import meteordevelopment.meteorclient.addons.GithubRepo;
 import meteordevelopment.meteorclient.addons.MeteorAddon;
 import meteordevelopment.meteorclient.gui.GuiThemes;
+import meteordevelopment.meteorclient.utils.network.Http;
+import meteordevelopment.meteorclient.utils.network.MeteorExecutor;
 import net.minecraft.client.gui.Click;
 import net.minecraft.client.gui.DrawContext;
 import net.minecraft.client.gui.screen.Screen;
@@ -18,12 +21,13 @@ import net.minecraft.client.gui.screen.option.OptionsScreen;
 import net.minecraft.client.gui.screen.world.SelectWorldScreen;
 import net.minecraft.client.resource.language.I18n;
 import net.minecraft.text.Text;
-import net.minecraft.util.Util;
 import org.lwjgl.glfw.GLFW;
 
 import java.io.IOException;
+import java.net.http.HttpResponse;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
@@ -34,9 +38,8 @@ import static meteordevelopment.meteorclient.MeteorClient.mc;
 /**
  * Кастомное главное меню — порт MainMenuScreen (ThunderHack) под Meteor.
  *
- * В отличие от старого Starfield (который рисовал (ширина*высота)/16 звёзд —
- * порядка 130 тысяч fill на кадр и вызывал лаги), здесь всего 200 мерцающих
- * и дрейфующих звёзд + один fillGradient — рендер практически бесплатный.
+ * Слева — всегда видимый changelog (последние коммиты с GitHub, без кнопок),
+ * по центру — логотип и кнопки, выложенные в одну линию.
  */
 public class MainMenuScreen extends Screen {
     private static MainMenuScreen INSTANCE = new MainMenuScreen();
@@ -52,23 +55,31 @@ public class MainMenuScreen extends Screen {
     /** Название меню (логотип). Меняется по клику — см. {@link EditMainMenuTitleScreen}. */
     public static String title = "METEOR CLIENT";
 
-    // Кнопка ченжлога (левый верхний угол)
-    private int changelogX, changelogY, changelogW, changelogH;
+    // Changelog (подгружается с GitHub один раз и просто рисуется слева)
+    private final List<ChangelogEntry> changelog = new ArrayList<>();
+    private boolean changelogLoading = true;
+    private boolean changelogFailed = false;
 
-    private static final String PASTEBIN_URL = "https://pastebin.com/v5WcmZNL";
+    // Кнопки (ThunderHack-style: 107x38, зазор 7px)
+    private static final int BUTTON_WIDTH = 107;
+    private static final int BUTTON_HEIGHT = 38;
+    private static final int BUTTON_GAP = 7;
+
+    private static final int MAX_CHANGELOG_COMMITS = 8;
 
     protected MainMenuScreen() {
         super(Text.of("MainMenu"));
 
         loadTitle();
 
-        buttons.add(new MainMenuButton(-110, -70, I18n.translate("menu.singleplayer").toUpperCase(Locale.ROOT), () -> mc.setScreen(new SelectWorldScreen(this))));
-        buttons.add(new MainMenuButton(4, -70, I18n.translate("menu.multiplayer").toUpperCase(Locale.ROOT), () -> mc.setScreen(new MultiplayerScreen(this))));
-        buttons.add(new MainMenuButton(-110, -29, I18n.translate("menu.options").toUpperCase(Locale.ROOT).replace(".", ""), () -> mc.setScreen(new OptionsScreen(this, mc.options))));
-        buttons.add(new MainMenuButton(4, -29, "MODULES", () -> mc.setScreen(GuiThemes.get().modulesScreen())));
-        buttons.add(new MainMenuButton(-110, 12, I18n.translate("menu.quit").toUpperCase(Locale.ROOT), mc::scheduleStop, true));
+        buttons.add(new MainMenuButton(I18n.translate("menu.singleplayer").toUpperCase(Locale.ROOT), () -> mc.setScreen(new SelectWorldScreen(this))));
+        buttons.add(new MainMenuButton(I18n.translate("menu.multiplayer").toUpperCase(Locale.ROOT), () -> mc.setScreen(new MultiplayerScreen(this))));
+        buttons.add(new MainMenuButton(I18n.translate("menu.options").toUpperCase(Locale.ROOT).replace(".", ""), () -> mc.setScreen(new OptionsScreen(this, mc.options))));
+        buttons.add(new MainMenuButton("MODULES", () -> mc.setScreen(GuiThemes.get().modulesScreen())));
+        buttons.add(new MainMenuButton(I18n.translate("menu.quit").toUpperCase(Locale.ROOT), mc::scheduleStop, true));
 
         generateStars();
+        loadChangelog();
     }
 
     public static MainMenuScreen getInstance() {
@@ -105,6 +116,53 @@ public class MainMenuScreen extends Screen {
             Files.writeString(titleFile(), t);
         } catch (IOException ignored) {
         }
+    }
+
+    /** Асинхронно тянет последние коммиты с GitHub и складывает в {@link #changelog}. */
+    private void loadChangelog() {
+        MeteorExecutor.execute(() -> {
+            try {
+                if (MeteorClient.ADDON == null || MeteorClient.ADDON.getRepo() == null) {
+                    changelogFailed = true;
+                    return;
+                }
+
+                GithubRepo repo = MeteorClient.ADDON.getRepo();
+                Http.Request request = Http.get("https://api.github.com/repos/%s/commits?sha=%s&per_page=%d".formatted(repo.getOwnerName(), repo.branch(), MAX_CHANGELOG_COMMITS));
+                repo.authenticate(request);
+                HttpResponse<Commit[]> res = request.sendJsonResponse(Commit[].class);
+
+                if (res.statusCode() == Http.SUCCESS && res.body() != null) {
+                    List<ChangelogEntry> entries = new ArrayList<>();
+                    for (Commit commit : res.body()) {
+                        if (commit == null || commit.commit == null || commit.commit.committer == null) continue;
+
+                        String message = commit.commit.message.replace('\r', ' ').replace('\n', ' ').trim();
+                        if (message.isEmpty()) message = "(no message)";
+
+                        String sha = commit.sha == null ? "" : commit.sha;
+                        if (sha.length() > 7) sha = sha.substring(0, 7);
+
+                        String date = "";
+                        try {
+                            date = DateTimeFormatter.ofPattern("dd.MM.yyyy").format(DateTimeFormatter.ISO_OFFSET_DATE_TIME.parse(commit.commit.committer.date));
+                        } catch (Exception ignored) {
+                        }
+
+                        entries.add(new ChangelogEntry(message, sha, date));
+                    }
+
+                    changelog.clear();
+                    changelog.addAll(entries);
+                } else {
+                    changelogFailed = true;
+                }
+            } catch (Exception e) {
+                changelogFailed = true;
+            } finally {
+                changelogLoading = false;
+            }
+        });
     }
 
     private void generateStars() {
@@ -171,32 +229,35 @@ public class MainMenuScreen extends Screen {
 
     @Override
     public void render(DrawContext context, int mouseX, int mouseY, float delta) {
-        int halfOfWidth = mc.getWindow().getScaledWidth() / 2;
-        int halfOfHeight = mc.getWindow().getScaledHeight() / 2;
+        int width = mc.getWindow().getScaledWidth();
+        int height = mc.getWindow().getScaledHeight();
+        int halfOfWidth = width / 2;
+        int halfOfHeight = height / 2;
 
         renderStarrySky(context);
 
-        // Панель по центру
-        int panelX = halfOfWidth - 120;
-        int panelY = halfOfHeight - 80;
-        int panelW = 240;
-        int panelH = 140;
-        context.fill(panelX, panelY, panelX + panelW, panelY + panelH, 0xCC0A0E1F);
-        drawBorder(context, panelX, panelY, panelX + panelW, panelY + panelH, 0xFF3A5CFF);
+        // Чанжлог слева — просто текст, ничего открывать не надо
+        renderChangelog(context);
 
-        // Кнопки
-        buttons.forEach(b -> b.render(context, mouseX, mouseY));
+        // Кнопки в одну линию (по центру экрана)
+        int[] row = buttonRow();
+        for (int i = 0; i < buttons.size(); i++) {
+            buttons.get(i).render(context, mouseX, mouseY, row[0] + i * (row[2] + BUTTON_GAP), row[1], row[2], row[3]);
+        }
 
         // Логотип (x2 к ванильному шрифту, подсветка при наведении, клик меняет название)
-        boolean hoveredLogo = isHovered(mouseX, mouseY, halfOfWidth - 120, halfOfHeight - 130, 210, 50);
+        boolean hoveredLogo = isHovered(mouseX, mouseY, halfOfWidth - 120, halfOfHeight - 140, 240, 44);
         String logo = title;
         int logoW = mc.textRenderer.getWidth(logo);
+        float logoScale = 2.0f;
+        if (logoW * logoScale > width - 280) {
+            logoScale = Math.max(0.8f, (width - 280f) / logoW); // не даём логотипу налезть на чанжлог
+        }
+        int logoX = (int) (halfOfWidth / logoScale - logoW / 2f);
+        int logoY = (int) ((halfOfHeight - 130) / logoScale);
         context.getMatrices().pushMatrix();
-        context.getMatrices().scale(2.0f, 2.0f);
-        context.drawText(mc.textRenderer, logo,
-            (halfOfWidth - logoW) / 2,
-            (halfOfHeight - 129) / 2,
-            hoveredLogo ? 0xE6FFFFFF : 0xB4FFFFFF, false);
+        context.getMatrices().scale(logoScale, logoScale);
+        context.drawText(mc.textRenderer, logo, logoX, logoY, hoveredLogo ? 0xE6FFFFFF : 0xB4FFFFFF, false);
         context.getMatrices().popMatrix();
 
         // Подсказка: клик по названию открывает окно смены названия
@@ -206,10 +267,10 @@ public class MainMenuScreen extends Screen {
             hoveredLogo ? 0x99FFFFFF : 0x66FFFFFF, false);
 
         // Возврат в ванильное меню
-        boolean hovered = isHovered(mouseX, mouseY, halfOfWidth - 50, halfOfHeight + 70, 100, 10);
+        boolean hovered = isHovered(mouseX, mouseY, halfOfWidth - 50, halfOfHeight + 22, 100, 10);
         String back = "<-- Back to default menu";
         context.drawText(mc.textRenderer, back,
-            halfOfWidth - mc.textRenderer.getWidth(back) / 2, halfOfHeight + 70,
+            halfOfWidth - mc.textRenderer.getWidth(back) / 2, halfOfHeight + 22,
             hovered ? -1 : 0x99FFFFFF, false);
 
         // Сборка внизу по центру
@@ -217,33 +278,67 @@ public class MainMenuScreen extends Screen {
             ? MeteorClient.ADDON.getCommit().substring(0, Math.min(7, MeteorClient.ADDON.getCommit().length()))
             : "—");
         context.drawText(mc.textRenderer, build,
-            halfOfWidth - mc.textRenderer.getWidth(build) / 2, halfOfHeight * 2 - 15, 0xFFB0B8D0, false);
-
-        // Кнопка ченжлога (слева сверху)
-        String changelog = "Changelog »";
-        changelogX = 8;
-        changelogY = 6;
-        changelogW = mc.textRenderer.getWidth(changelog);
-        changelogH = mc.textRenderer.fontHeight;
-        boolean hoverChangelog = isHovered(mouseX, mouseY, changelogX, changelogY - 1, changelogW, changelogH + 2);
-        context.drawText(mc.textRenderer, changelog, changelogX, changelogY,
-            hoverChangelog ? 0xFF8FE6FF : 0xFF55D0FF, false);
+            halfOfWidth - mc.textRenderer.getWidth(build) / 2, height - 15, 0xFFB0B8D0, false);
 
         // Аддоны (справа сверху)
         int totalAddonsLoaded = AddonManager.ADDONS.size();
         String addonsText = "Addons Loaded: " + totalAddonsLoaded;
-        int screenWidth = mc.getWindow().getScaledWidth();
         int textWidth = mc.textRenderer.getWidth(addonsText);
-        int textX = screenWidth - textWidth - 5;
+        int textX = width - textWidth - 5;
         context.drawText(mc.textRenderer, addonsText, textX, 5, 0xFFFFFFFF, false);
 
         int offset = 0;
         for (MeteorAddon addon : AddonManager.ADDONS) {
             String addonName = addon.name + " |";
             textWidth = mc.textRenderer.getWidth(addonName);
-            textX = screenWidth - textWidth - 5;
+            textX = width - textWidth - 5;
             context.drawText(mc.textRenderer, addonName, textX, 13 + offset, 0xFFAAAAAA, false);
             offset += 9;
+        }
+    }
+
+    /** Геометрия ряда кнопок: {startX, y, buttonWidth, buttonHeight}. */
+    private int[] buttonRow() {
+        int screenWidth = mc.getWindow().getScaledWidth();
+        int count = buttons.size();
+        int bw = Math.max(1, Math.min(BUTTON_WIDTH, (screenWidth - 40 - (count - 1) * BUTTON_GAP) / count));
+        int totalW = bw * count + (count - 1) * BUTTON_GAP;
+        int startX = (screenWidth - totalW) / 2;
+        int y = mc.getWindow().getScaledHeight() / 2 - 30;
+        return new int[] { startX, y, bw, BUTTON_HEIGHT };
+    }
+
+    /** Панель changelog слева: заголовок + список последних коммитов. */
+    private void renderChangelog(DrawContext context) {
+        int panelX = 8;
+        int panelY = 8;
+        int panelW = 252;
+        int pad = 10;
+
+        int entries = changelogLoading ? 1 : (changelogFailed || changelog.isEmpty() ? 2 : Math.min(changelog.size(), MAX_CHANGELOG_COMMITS));
+        int panelH = 36 + entries * 18 + 8;
+
+        context.fill(panelX, panelY, panelX + panelW, panelY + panelH, 0xCC0A0E1F);
+        drawBorder(context, panelX, panelY, panelX + panelW, panelY + panelH, 0xFF3A5CFF);
+
+        int contentX = panelX + pad;
+        context.drawText(mc.textRenderer, "Changelog", contentX, panelY + 8, 0xFFE0E7FF, true);
+        context.drawText(mc.textRenderer, "Meteor Client", contentX, panelY + 21, 0xFFB0B8D0, true);
+
+        int y = panelY + 36;
+        if (changelogLoading) {
+            context.drawText(mc.textRenderer, "Loading...", contentX, y, 0xFF8FA3C8, false);
+        } else if (changelogFailed || changelog.isEmpty()) {
+            context.drawText(mc.textRenderer, "Failed to load", contentX, y, 0xFF8FA3C8, false);
+            context.drawText(mc.textRenderer, truncate("https://pastebin.com/v5WcmZNL", 30), contentX, y + 10, 0xFF6A6F8C, false);
+        } else {
+            for (int i = 0; i < Math.min(changelog.size(), MAX_CHANGELOG_COMMITS); i++) {
+                ChangelogEntry entry = changelog.get(i);
+                context.drawText(mc.textRenderer, "» " + truncate(entry.message, 33), contentX, y, 0xFFE8EEFF, false);
+                String meta = entry.date.isEmpty() ? entry.sha : entry.date + "  " + entry.sha;
+                context.drawText(mc.textRenderer, "   " + meta, contentX, y + 9, 0xFF7A8BB0, false);
+                y += 18;
+            }
         }
     }
 
@@ -253,37 +348,28 @@ public class MainMenuScreen extends Screen {
             int mouseX = (int) click.x();
             int mouseY = (int) click.y();
 
-            buttons.forEach(b -> b.onClick(mouseX, mouseY));
+            int[] row = buttonRow();
+            for (int i = 0; i < buttons.size(); i++) {
+                buttons.get(i).onClick(mouseX, mouseY, row[0] + i * (row[2] + BUTTON_GAP), row[1], row[2], row[3]);
+            }
 
             int halfOfWidth = mc.getWindow().getScaledWidth() / 2;
             int halfOfHeight = mc.getWindow().getScaledHeight() / 2;
 
             // Клик по названию — окно смены названия
-            if (isHovered(mouseX, mouseY, halfOfWidth - 120, halfOfHeight - 130, 210, 50)) {
+            if (isHovered(mouseX, mouseY, halfOfWidth - 120, halfOfHeight - 140, 240, 44)) {
                 mc.setScreen(new EditMainMenuTitleScreen(GuiThemes.get()));
             }
 
-            if (isHovered(mouseX, mouseY, halfOfWidth - 50, halfOfHeight + 70, 100, 10)) {
+            // Возврат в ванильное меню
+            if (isHovered(mouseX, mouseY, halfOfWidth - 50, halfOfHeight + 22, 100, 10)) {
                 confirm = true;
                 mc.setScreen(new TitleScreen());
                 confirm = false;
             }
-
-            if (isHovered(mouseX, mouseY, changelogX, changelogY - 1, changelogW, changelogH + 2)) {
-                openChangelog();
-            }
         }
 
         return super.mouseClicked(click, doubled);
-    }
-
-    private void openChangelog() {
-        if (MeteorClient.ADDON != null && MeteorClient.ADDON.getRepo() != null && MeteorClient.ADDON.getCommit() != null) {
-            mc.setScreen(new CommitsScreen(GuiThemes.get(), MeteorClient.ADDON));
-        } else {
-            // Если репо/коммит недоступны — открываем Pastebin как запасной вариант.
-            Util.getOperatingSystem().open(PASTEBIN_URL);
-        }
     }
 
     private static boolean isHovered(double mouseX, double mouseY, int x, int y, int w, int h) {
@@ -297,48 +383,43 @@ public class MainMenuScreen extends Screen {
         ctx.fill(x1, y0, x1 + 1, y1 + 1, color);
     }
 
-    /** Кнопка главного меню; координаты — смещения от центра экрана. */
-    private static class MainMenuButton {
-        private static final int WIDTH = 216;
-        private static final int HEIGHT = 35;
+    private static String truncate(String s, int maxChars) {
+        if (s.length() <= maxChars) return s;
+        return s.substring(0, maxChars - 1) + "…";
+    }
 
-        private final int x, y;
+    /** Кнопка главного меню; размеры — как в ThunderHack (107x38), позиция передаётся при рендере. */
+    private static class MainMenuButton {
         private final String text;
         private final Runnable action;
         private final boolean danger;
 
-        MainMenuButton(int x, int y, String text, Runnable action) {
-            this(x, y, text, action, false);
+        MainMenuButton(String text, Runnable action) {
+            this(text, action, false);
         }
 
-        MainMenuButton(int x, int y, String text, Runnable action, boolean danger) {
-            this.x = x;
-            this.y = y;
+        MainMenuButton(String text, Runnable action, boolean danger) {
             this.text = text;
             this.action = action;
             this.danger = danger;
         }
 
-        void render(DrawContext context, int mouseX, int mouseY) {
-            int bx = mc.getWindow().getScaledWidth() / 2 + x;
-            int by = mc.getWindow().getScaledHeight() / 2 + y;
-            boolean hovered = mouseX >= bx && mouseX <= bx + WIDTH && mouseY >= by && mouseY <= by + HEIGHT;
+        void render(DrawContext context, int mouseX, int mouseY, int x, int y, int w, int h) {
+            boolean hovered = mouseX >= x && mouseX <= x + w && mouseY >= y && mouseY <= y + h;
 
             int bg = hovered ? 0xE61A2A55 : 0xE6101830;
             int border = hovered ? 0xFF6A8CFF : (danger ? 0xFFB03A3A : 0xFF3A5CFF);
 
-            context.fill(bx, by, bx + WIDTH, by + HEIGHT, bg);
-            drawBorder(context, bx, by, bx + WIDTH, by + HEIGHT, border);
+            context.fill(x, y, x + w, y + h, bg);
+            drawBorder(context, x, y, x + w, y + h, border);
 
-            int textX = bx + (WIDTH - mc.textRenderer.getWidth(text)) / 2;
-            int textY = by + (HEIGHT - mc.textRenderer.fontHeight) / 2 + 1;
+            int textX = x + (w - mc.textRenderer.getWidth(text)) / 2;
+            int textY = y + (h - mc.textRenderer.fontHeight) / 2 + 1;
             context.drawText(mc.textRenderer, text, textX, textY, 0xFFFFFFFF, false);
         }
 
-        void onClick(int mouseX, int mouseY) {
-            int bx = mc.getWindow().getScaledWidth() / 2 + x;
-            int by = mc.getWindow().getScaledHeight() / 2 + y;
-            if (mouseX >= bx && mouseX <= bx + WIDTH && mouseY >= by && mouseY <= by + HEIGHT) {
+        void onClick(int mouseX, int mouseY, int x, int y, int w, int h) {
+            if (mouseX >= x && mouseX <= x + w && mouseY >= y && mouseY <= y + h) {
                 action.run();
             }
         }
@@ -380,5 +461,21 @@ public class MainMenuScreen extends Screen {
             if (y > 1.0f) y -= 1.0f;
             if (y < 0.0f) y += 1.0f;
         }
+    }
+
+    private record ChangelogEntry(String message, String sha, String date) {}
+
+    private static class Commit {
+        public String sha;
+        public CommitInner commit;
+    }
+
+    private static class CommitInner {
+        public Committer committer;
+        public String message;
+    }
+
+    private static class Committer {
+        public String date;
     }
 }
