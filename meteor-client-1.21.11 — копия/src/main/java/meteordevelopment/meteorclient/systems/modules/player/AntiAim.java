@@ -16,16 +16,15 @@ import net.minecraft.util.math.MathHelper;
 /**
  * Порт модуля AntiAim (ThunderHack) под Meteor Client.
  *
- * Спуфит серверу (и клиенту) ваши ротации: pitch/yaw можно крутить,
- * дёргать, рандомить или фиксировать — пока игрок не атакует/не юзает
+ * Спуфит серверу ваши ротации: pitch/yaw можно крутить, дёргать,
+ * рандомить или фиксировать — пока игрок не атакует/не юзает
  * предмет (AllowInteract).
  *
- * В отличие от оригинала (ModuleManager.rotations.fixRotation):
- * - «фиксация» ротации для сервера делается через штатное событие
- *   SendMovementPacketsEvent.Pre — ровно перед отправкой пакета движения,
- *   т.е. сервер всегда видит именно заспуфенную ротацию.
- * - GCD-фикс сохранён как в оригинале, чтобы ротация не «дёргалась»
- *   на мелких углах.
+ * Камера при этом НЕ крутится: заспуфенная ротация уходит на сервер
+ * в пакете движения (SendMovementPacketsEvent.Pre), а сразу после
+ * отправки (SendMovementPacketsEvent.Post) клиенту возвращается
+ * настоящий yaw/pitch. Визуально крутится только тело персонажа
+ * (bodyYaw), голова смотрит туда же, куда и камера.
  */
 public class AntiAim extends Module {
     private final SettingGroup sgGeneral = settings.getDefaultGroup();
@@ -102,6 +101,8 @@ public class AntiAim extends Module {
     );
 
     private float rotationYaw, rotationPitch, pitchSinusStep, yawSinusStep;
+    private float preYaw, prePitch;
+    private boolean applied;
 
     public AntiAim() {
         super(Categories.Player, "anti-aim", "Спуфит ваши ротации (порт AntiAim с ThunderHack).");
@@ -187,21 +188,44 @@ public class AntiAim extends Module {
 
     // Применение ротации с GCD-фиксом ровно перед отправкой пакета движения —
     // аналог EventSync (ThunderHack) / ModuleManager.rotations.fixRotation.
+    // Пакет уносит заспуфенную ротацию на сервер, а камера после отправки
+    // возвращается в реальное положение (см. onSyncPost).
     @EventHandler
     private void onSync(SendMovementPacketsEvent.Pre event) {
         if (mc.player == null) return;
 
-        if (allowInteract.get() && (mc.options.attackKey.isPressed() || mc.options.useKey.isPressed())) return;
+        if (allowInteract.get() && (mc.options.attackKey.isPressed() || mc.options.useKey.isPressed())) {
+            applied = false;
+            return;
+        }
+
+        applied = true;
+        preYaw = mc.player.getYaw();
+        prePitch = mc.player.getPitch();
 
         double gcdFix = Math.pow(mc.options.getMouseSensitivity().getValue() * 0.6 + 0.2, 3.0) * 1.2;
 
         if (yawMode.get() != Mode.None) {
             mc.player.setYaw((float) (rotationYaw - (rotationYaw - mc.player.getYaw()) % gcdFix));
-            if (bodySync.get()) mc.player.bodyYaw = rotationYaw;
         }
 
         if (pitchMode.get() != Mode.None) {
             mc.player.setPitch((float) (rotationPitch - (rotationPitch - mc.player.getPitch()) % gcdFix));
+        }
+    }
+
+    // Возвращаем камере настоящую ротацию — сервер уже получил спуф.
+    // Крутится только тело персонажа (bodyYaw), голова/камера не двигаются.
+    @EventHandler
+    private void onSyncPost(SendMovementPacketsEvent.Post event) {
+        if (mc.player == null || !applied) return;
+
+        applied = false;
+        mc.player.setYaw(preYaw);
+        mc.player.setPitch(prePitch);
+
+        if (yawMode.get() != Mode.None && bodySync.get()) {
+            mc.player.bodyYaw = rotationYaw;
         }
     }
 

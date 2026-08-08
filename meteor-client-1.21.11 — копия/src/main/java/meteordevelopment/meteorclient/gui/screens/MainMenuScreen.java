@@ -7,7 +7,6 @@ package meteordevelopment.meteorclient.gui.screens;
 
 import meteordevelopment.meteorclient.MeteorClient;
 import meteordevelopment.meteorclient.addons.AddonManager;
-import meteordevelopment.meteorclient.addons.GithubRepo;
 import meteordevelopment.meteorclient.addons.MeteorAddon;
 import meteordevelopment.meteorclient.gui.GuiThemes;
 import meteordevelopment.meteorclient.utils.network.Http;
@@ -24,10 +23,8 @@ import net.minecraft.text.Text;
 import org.lwjgl.glfw.GLFW;
 
 import java.io.IOException;
-import java.net.http.HttpResponse;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
@@ -38,8 +35,9 @@ import static meteordevelopment.meteorclient.MeteorClient.mc;
 /**
  * Кастомное главное меню — порт MainMenuScreen (ThunderHack) под Meteor.
  *
- * Слева — всегда видимый changelog (последние коммиты с GitHub, без кнопок),
- * по центру — логотип и кнопки, выложенные в одну линию.
+ * Слева — changelog (текст с pastebin.com/v5WcmZNL, без кнопок),
+ * по центру — логотип и кнопки колонкой вниз от середины экрана,
+ * со скруглёнными углами.
  */
 public class MainMenuScreen extends Screen {
     private static MainMenuScreen INSTANCE = new MainMenuScreen();
@@ -55,28 +53,43 @@ public class MainMenuScreen extends Screen {
     /** Название меню (логотип). Меняется по клику — см. {@link EditMainMenuTitleScreen}. */
     public static String title = "METEOR CLIENT";
 
-    // Changelog (подгружается с GitHub один раз и просто рисуется слева)
-    private final List<ChangelogEntry> changelog = new ArrayList<>();
+    // Changelog (текст с pastebin, подгружается один раз и просто рисуется слева)
+    private static final String PASTEBIN_URL = "https://pastebin.com/raw/v5WcmZNL";
+    private static final int MAX_CHANGELOG_LINES = 12;
+    private final List<String> changelogLines = new ArrayList<>();
     private boolean changelogLoading = true;
     private boolean changelogFailed = false;
 
-    // Кнопки (ThunderHack-style: 107x38, зазор 7px)
+    // Кнопки (ThunderHack-style): обычные 107x38, выход 222x38
     private static final int BUTTON_WIDTH = 107;
+    private static final int BUTTON_EXIT_WIDTH = 222;
     private static final int BUTTON_HEIGHT = 38;
-    private static final int BUTTON_GAP = 7;
+    private static final int BUTTON_GAP = 10;
 
-    private static final int MAX_CHANGELOG_COMMITS = 8;
+    // Скругление углов
+    private static final int CORNER_RADIUS = 5;
+    private static final List<int[]> CORNER_POINTS = new ArrayList<>();
+
+    static {
+        for (int dx = -CORNER_RADIUS; dx <= CORNER_RADIUS; dx++) {
+            for (int dy = -CORNER_RADIUS; dy <= CORNER_RADIUS; dy++) {
+                if (dx * dx + dy * dy <= CORNER_RADIUS * CORNER_RADIUS) {
+                    CORNER_POINTS.add(new int[] {dx, dy});
+                }
+            }
+        }
+    }
 
     protected MainMenuScreen() {
         super(Text.of("MainMenu"));
 
         loadTitle();
 
-        buttons.add(new MainMenuButton(I18n.translate("menu.singleplayer").toUpperCase(Locale.ROOT), () -> mc.setScreen(new SelectWorldScreen(this))));
-        buttons.add(new MainMenuButton(I18n.translate("menu.multiplayer").toUpperCase(Locale.ROOT), () -> mc.setScreen(new MultiplayerScreen(this))));
-        buttons.add(new MainMenuButton(I18n.translate("menu.options").toUpperCase(Locale.ROOT).replace(".", ""), () -> mc.setScreen(new OptionsScreen(this, mc.options))));
-        buttons.add(new MainMenuButton("MODULES", () -> mc.setScreen(GuiThemes.get().modulesScreen())));
-        buttons.add(new MainMenuButton(I18n.translate("menu.quit").toUpperCase(Locale.ROOT), mc::scheduleStop, true));
+        buttons.add(new MainMenuButton(false, I18n.translate("menu.singleplayer").toUpperCase(Locale.ROOT), () -> mc.setScreen(new SelectWorldScreen(this))));
+        buttons.add(new MainMenuButton(false, I18n.translate("menu.multiplayer").toUpperCase(Locale.ROOT), () -> mc.setScreen(new MultiplayerScreen(this))));
+        buttons.add(new MainMenuButton(false, I18n.translate("menu.options").toUpperCase(Locale.ROOT).replace(".", ""), () -> mc.setScreen(new OptionsScreen(this, mc.options))));
+        buttons.add(new MainMenuButton(false, "MODULES", () -> mc.setScreen(GuiThemes.get().modulesScreen())));
+        buttons.add(new MainMenuButton(true, I18n.translate("menu.quit").toUpperCase(Locale.ROOT), mc::scheduleStop));
 
         generateStars();
         loadChangelog();
@@ -118,44 +131,29 @@ public class MainMenuScreen extends Screen {
         }
     }
 
-    /** Асинхронно тянет последние коммиты с GitHub и складывает в {@link #changelog}. */
+    /** Асинхронно тянет текст ченжлога с pastebin и складывает в {@link #changelogLines}. */
     private void loadChangelog() {
         MeteorExecutor.execute(() -> {
             try {
-                if (MeteorClient.ADDON == null || MeteorClient.ADDON.getRepo() == null) {
+                String raw = Http.get(PASTEBIN_URL).sendString();
+                if (raw == null || raw.isBlank()) {
                     changelogFailed = true;
                     return;
                 }
 
-                GithubRepo repo = MeteorClient.ADDON.getRepo();
-                Http.Request request = Http.get("https://api.github.com/repos/%s/commits?sha=%s&per_page=%d".formatted(repo.getOwnerName(), repo.branch(), MAX_CHANGELOG_COMMITS));
-                repo.authenticate(request);
-                HttpResponse<Commit[]> res = request.sendJsonResponse(Commit[].class);
+                List<String> lines = new ArrayList<>();
+                for (String line : raw.split("\n")) {
+                    String l = line.replace("\r", "").stripTrailing();
+                    if (l.isEmpty()) continue;
+                    lines.add(l);
+                    if (lines.size() >= MAX_CHANGELOG_LINES) break;
+                }
 
-                if (res.statusCode() == Http.SUCCESS && res.body() != null) {
-                    List<ChangelogEntry> entries = new ArrayList<>();
-                    for (Commit commit : res.body()) {
-                        if (commit == null || commit.commit == null || commit.commit.committer == null) continue;
-
-                        String message = commit.commit.message.replace('\r', ' ').replace('\n', ' ').trim();
-                        if (message.isEmpty()) message = "(no message)";
-
-                        String sha = commit.sha == null ? "" : commit.sha;
-                        if (sha.length() > 7) sha = sha.substring(0, 7);
-
-                        String date = "";
-                        try {
-                            date = DateTimeFormatter.ofPattern("dd.MM.yyyy").format(DateTimeFormatter.ISO_OFFSET_DATE_TIME.parse(commit.commit.committer.date));
-                        } catch (Exception ignored) {
-                        }
-
-                        entries.add(new ChangelogEntry(message, sha, date));
-                    }
-
-                    changelog.clear();
-                    changelog.addAll(entries);
-                } else {
+                if (lines.isEmpty()) {
                     changelogFailed = true;
+                } else {
+                    changelogLines.clear();
+                    changelogLines.addAll(lines);
                 }
             } catch (Exception e) {
                 changelogFailed = true;
@@ -236,17 +234,22 @@ public class MainMenuScreen extends Screen {
 
         renderStarrySky(context);
 
-        // Чанжлог слева — просто текст, ничего открывать не надо
+        // Чанжлог слева — просто текст с pastebin, ничего открывать не надо
         renderChangelog(context);
 
-        // Кнопки в одну линию (по центру экрана)
-        int[] row = buttonRow();
-        for (int i = 0; i < buttons.size(); i++) {
-            buttons.get(i).render(context, mouseX, mouseY, row[0] + i * (row[2] + BUTTON_GAP), row[1], row[2], row[3]);
+        // Кнопки колонкой вниз от середины экрана
+        int startX = (width - BUTTON_EXIT_WIDTH) / 2;
+        int startY = buttonColumnStartY();
+        int y = startY;
+        for (MainMenuButton button : buttons) {
+            int bw = button.isExit ? BUTTON_EXIT_WIDTH : BUTTON_WIDTH;
+            int bx = startX + (BUTTON_EXIT_WIDTH - bw) / 2; // каждая кнопка по центру колонки
+            button.render(context, mouseX, mouseY, bx, y, bw, BUTTON_HEIGHT);
+            y += BUTTON_HEIGHT + BUTTON_GAP;
         }
 
         // Логотип (x2 к ванильному шрифту, подсветка при наведении, клик меняет название)
-        boolean hoveredLogo = isHovered(mouseX, mouseY, halfOfWidth - 120, halfOfHeight - 140, 240, 44);
+        boolean hoveredLogo = isHovered(mouseX, mouseY, halfOfWidth - 120, halfOfHeight - 150, 240, 44);
         String logo = title;
         int logoW = mc.textRenderer.getWidth(logo);
         float logoScale = 2.0f;
@@ -254,7 +257,7 @@ public class MainMenuScreen extends Screen {
             logoScale = Math.max(0.8f, (width - 280f) / logoW); // не даём логотипу налезть на чанжлог
         }
         int logoX = (int) (halfOfWidth / logoScale - logoW / 2f);
-        int logoY = (int) ((halfOfHeight - 130) / logoScale);
+        int logoY = (int) ((halfOfHeight - 150) / logoScale);
         context.getMatrices().pushMatrix();
         context.getMatrices().scale(logoScale, logoScale);
         context.drawText(mc.textRenderer, logo, logoX, logoY, hoveredLogo ? 0xE6FFFFFF : 0xB4FFFFFF, false);
@@ -263,14 +266,15 @@ public class MainMenuScreen extends Screen {
         // Подсказка: клик по названию открывает окно смены названия
         String hint = "\u00abclick to rename\u00bb";
         context.drawText(mc.textRenderer, hint,
-            halfOfWidth - mc.textRenderer.getWidth(hint) / 2, halfOfHeight - 104,
+            halfOfWidth - mc.textRenderer.getWidth(hint) / 2, halfOfHeight - 122,
             hoveredLogo ? 0x99FFFFFF : 0x66FFFFFF, false);
 
-        // Возврат в ванильное меню
-        boolean hovered = isHovered(mouseX, mouseY, halfOfWidth - 50, halfOfHeight + 22, 100, 10);
+        // Возврат в ванильное меню (под последней кнопкой)
+        int backY = buttonColumnBottom() + 10;
+        boolean hovered = isHovered(mouseX, mouseY, halfOfWidth - 50, backY, 100, 10);
         String back = "<-- Back to default menu";
         context.drawText(mc.textRenderer, back,
-            halfOfWidth - mc.textRenderer.getWidth(back) / 2, halfOfHeight + 22,
+            halfOfWidth - mc.textRenderer.getWidth(back) / 2, backY,
             hovered ? -1 : 0x99FFFFFF, false);
 
         // Сборка внизу по центру
@@ -297,47 +301,50 @@ public class MainMenuScreen extends Screen {
         }
     }
 
-    /** Геометрия ряда кнопок: {startX, y, buttonWidth, buttonHeight}. */
-    private int[] buttonRow() {
-        int screenWidth = mc.getWindow().getScaledWidth();
-        int count = buttons.size();
-        int bw = Math.max(1, Math.min(BUTTON_WIDTH, (screenWidth - 40 - (count - 1) * BUTTON_GAP) / count));
-        int totalW = bw * count + (count - 1) * BUTTON_GAP;
-        int startX = (screenWidth - totalW) / 2;
-        int y = mc.getWindow().getScaledHeight() / 2 - 30;
-        return new int[] { startX, y, bw, BUTTON_HEIGHT };
+    /** Y начала колонки кнопок: от середины экрана вниз (с защитой от вылезания за край). */
+    private int buttonColumnStartY() {
+        int height = mc.getWindow().getScaledHeight();
+        int totalH = buttonColumnHeight();
+        int startY = height / 2;
+        int maxBottom = height - 42;
+        if (startY + totalH > maxBottom) startY = Math.max(20, maxBottom - totalH);
+        return startY;
     }
 
-    /** Панель changelog слева: заголовок + список последних коммитов. */
+    private int buttonColumnHeight() {
+        return buttons.size() * BUTTON_HEIGHT + (buttons.size() - 1) * BUTTON_GAP;
+    }
+
+    private int buttonColumnBottom() {
+        return buttonColumnStartY() + buttonColumnHeight();
+    }
+
+    /** Панель changelog слева: заголовок + текст с pastebin. */
     private void renderChangelog(DrawContext context) {
         int panelX = 8;
         int panelY = 8;
-        int panelW = 252;
+        int panelW = 270;
         int pad = 10;
 
-        int entries = changelogLoading ? 1 : (changelogFailed || changelog.isEmpty() ? 2 : Math.min(changelog.size(), MAX_CHANGELOG_COMMITS));
-        int panelH = 36 + entries * 18 + 8;
+        int lines = changelogLoading ? 1 : (changelogFailed || changelogLines.isEmpty() ? 2 : Math.min(changelogLines.size(), MAX_CHANGELOG_LINES));
+        int panelH = 31 + lines * 10 + 10;
 
-        context.fill(panelX, panelY, panelX + panelW, panelY + panelH, 0xCC0A0E1F);
-        drawBorder(context, panelX, panelY, panelX + panelW, panelY + panelH, 0xFF3A5CFF);
+        drawRoundedBorder(context, panelX, panelY, panelW, panelH, 0xFF3A5CFF, 0xCC0A0E1F);
 
         int contentX = panelX + pad;
-        context.drawText(mc.textRenderer, "Changelog", contentX, panelY + 8, 0xFFE0E7FF, true);
-        context.drawText(mc.textRenderer, "Meteor Client", contentX, panelY + 21, 0xFFB0B8D0, true);
+        context.drawText(mc.textRenderer, "Changelog", contentX, panelY + 7, 0xFFE0E7FF, true);
 
-        int y = panelY + 36;
+        int y = panelY + 21;
         if (changelogLoading) {
             context.drawText(mc.textRenderer, "Loading...", contentX, y, 0xFF8FA3C8, false);
-        } else if (changelogFailed || changelog.isEmpty()) {
+        } else if (changelogFailed || changelogLines.isEmpty()) {
             context.drawText(mc.textRenderer, "Failed to load", contentX, y, 0xFF8FA3C8, false);
-            context.drawText(mc.textRenderer, truncate("https://pastebin.com/v5WcmZNL", 30), contentX, y + 10, 0xFF6A6F8C, false);
+            context.drawText(mc.textRenderer, "pastebin.com/v5WcmZNL", contentX, y + 10, 0xFF6A6F8C, false);
         } else {
-            for (int i = 0; i < Math.min(changelog.size(), MAX_CHANGELOG_COMMITS); i++) {
-                ChangelogEntry entry = changelog.get(i);
-                context.drawText(mc.textRenderer, "» " + truncate(entry.message, 33), contentX, y, 0xFFE8EEFF, false);
-                String meta = entry.date.isEmpty() ? entry.sha : entry.date + "  " + entry.sha;
-                context.drawText(mc.textRenderer, "   " + meta, contentX, y + 9, 0xFF7A8BB0, false);
-                y += 18;
+            int maxChars = (panelW - pad * 2) / 6; // ~6px на символ ванильного шрифта
+            for (int i = 0; i < Math.min(changelogLines.size(), MAX_CHANGELOG_LINES); i++) {
+                context.drawText(mc.textRenderer, truncate(changelogLines.get(i), maxChars), contentX, y, 0xFFE8EEFF, false);
+                y += 10;
             }
         }
     }
@@ -348,21 +355,25 @@ public class MainMenuScreen extends Screen {
             int mouseX = (int) click.x();
             int mouseY = (int) click.y();
 
-            int[] row = buttonRow();
-            for (int i = 0; i < buttons.size(); i++) {
-                buttons.get(i).onClick(mouseX, mouseY, row[0] + i * (row[2] + BUTTON_GAP), row[1], row[2], row[3]);
+            int startX = (mc.getWindow().getScaledWidth() - BUTTON_EXIT_WIDTH) / 2;
+            int y = buttonColumnStartY();
+            for (MainMenuButton button : buttons) {
+                int bw = button.isExit ? BUTTON_EXIT_WIDTH : BUTTON_WIDTH;
+                int bx = startX + (BUTTON_EXIT_WIDTH - bw) / 2;
+                button.onClick(mouseX, mouseY, bx, y, bw, BUTTON_HEIGHT);
+                y += BUTTON_HEIGHT + BUTTON_GAP;
             }
 
             int halfOfWidth = mc.getWindow().getScaledWidth() / 2;
             int halfOfHeight = mc.getWindow().getScaledHeight() / 2;
 
             // Клик по названию — окно смены названия
-            if (isHovered(mouseX, mouseY, halfOfWidth - 120, halfOfHeight - 140, 240, 44)) {
+            if (isHovered(mouseX, mouseY, halfOfWidth - 120, halfOfHeight - 150, 240, 44)) {
                 mc.setScreen(new EditMainMenuTitleScreen(GuiThemes.get()));
             }
 
             // Возврат в ванильное меню
-            if (isHovered(mouseX, mouseY, halfOfWidth - 50, halfOfHeight + 22, 100, 10)) {
+            if (isHovered(mouseX, mouseY, halfOfWidth - 50, buttonColumnBottom() + 10, 100, 10)) {
                 confirm = true;
                 mc.setScreen(new TitleScreen());
                 confirm = false;
@@ -376,11 +387,30 @@ public class MainMenuScreen extends Screen {
         return mouseX >= x && mouseX <= x + w && mouseY >= y && mouseY <= y + h;
     }
 
-    private static void drawBorder(DrawContext ctx, int x0, int y0, int x1, int y1, int color) {
-        ctx.fill(x0, y0, x1 + 1, y0 + 1, color);
-        ctx.fill(x0, y1, x1 + 1, y1 + 1, color);
-        ctx.fill(x0, y0, x0 + 1, y1 + 1, color);
-        ctx.fill(x1, y0, x1 + 1, y1 + 1, color);
+    /** Скруглённый прямоугольник: центральные полосы + попиксельные углы. */
+    private static void drawRoundedRect(DrawContext ctx, int x, int y, int w, int h, int color) {
+        ctx.fill(x + CORNER_RADIUS, y, x + w - CORNER_RADIUS, y + h, color);
+        ctx.fill(x, y + CORNER_RADIUS, x + w, y + h - CORNER_RADIUS, color);
+
+        for (int[] p : CORNER_POINTS) {
+            int dx = p[0];
+            int dy = p[1];
+
+            // Верхний левый
+            ctx.fill(x + CORNER_RADIUS + dx, y + CORNER_RADIUS + dy, x + CORNER_RADIUS + dx + 1, y + CORNER_RADIUS + dy + 1, color);
+            // Верхний правый
+            ctx.fill(x + w - CORNER_RADIUS - 1 + dx, y + CORNER_RADIUS + dy, x + w - CORNER_RADIUS + dx, y + CORNER_RADIUS + dy + 1, color);
+            // Нижний левый
+            ctx.fill(x + CORNER_RADIUS + dx, y + h - CORNER_RADIUS - 1 + dy, x + CORNER_RADIUS + dx + 1, y + h - CORNER_RADIUS + dy, color);
+            // Нижний правый
+            ctx.fill(x + w - CORNER_RADIUS - 1 + dx, y + h - CORNER_RADIUS - 1 + dy, x + w - CORNER_RADIUS + dx, y + h - CORNER_RADIUS + dy, color);
+        }
+    }
+
+    /** Рамка со скруглёнными углами: внешний слой цвета border, внутри — заливка bg. */
+    private static void drawRoundedBorder(DrawContext ctx, int x, int y, int w, int h, int border, int bg) {
+        drawRoundedRect(ctx, x, y, w, h, border);
+        drawRoundedRect(ctx, x + 1, y + 1, w - 2, h - 2, bg);
     }
 
     private static String truncate(String s, int maxChars) {
@@ -388,30 +418,25 @@ public class MainMenuScreen extends Screen {
         return s.substring(0, maxChars - 1) + "…";
     }
 
-    /** Кнопка главного меню; размеры — как в ThunderHack (107x38), позиция передаётся при рендере. */
+    /** Кнопка главного меню; размеры — как в ThunderHack (107x38, выход 222x38). */
     private static class MainMenuButton {
+        private final boolean isExit;
         private final String text;
         private final Runnable action;
-        private final boolean danger;
 
-        MainMenuButton(String text, Runnable action) {
-            this(text, action, false);
-        }
-
-        MainMenuButton(String text, Runnable action, boolean danger) {
+        MainMenuButton(boolean isExit, String text, Runnable action) {
+            this.isExit = isExit;
             this.text = text;
             this.action = action;
-            this.danger = danger;
         }
 
         void render(DrawContext context, int mouseX, int mouseY, int x, int y, int w, int h) {
             boolean hovered = mouseX >= x && mouseX <= x + w && mouseY >= y && mouseY <= y + h;
 
             int bg = hovered ? 0xE61A2A55 : 0xE6101830;
-            int border = hovered ? 0xFF6A8CFF : (danger ? 0xFFB03A3A : 0xFF3A5CFF);
+            int border = hovered ? 0xFF6A8CFF : (isExit ? 0xFFB03A3A : 0xFF3A5CFF);
 
-            context.fill(x, y, x + w, y + h, bg);
-            drawBorder(context, x, y, x + w, y + h, border);
+            drawRoundedBorder(context, x, y, w, h, border, bg);
 
             int textX = x + (w - mc.textRenderer.getWidth(text)) / 2;
             int textY = y + (h - mc.textRenderer.fontHeight) / 2 + 1;
@@ -461,21 +486,5 @@ public class MainMenuScreen extends Screen {
             if (y > 1.0f) y -= 1.0f;
             if (y < 0.0f) y += 1.0f;
         }
-    }
-
-    private record ChangelogEntry(String message, String sha, String date) {}
-
-    private static class Commit {
-        public String sha;
-        public CommitInner commit;
-    }
-
-    private static class CommitInner {
-        public Committer committer;
-        public String message;
-    }
-
-    private static class Committer {
-        public String date;
     }
 }
