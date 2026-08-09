@@ -11,6 +11,7 @@ import meteordevelopment.meteorclient.addons.MeteorAddon;
 import meteordevelopment.meteorclient.gui.GuiThemes;
 import meteordevelopment.meteorclient.utils.network.Http;
 import meteordevelopment.meteorclient.utils.network.MeteorExecutor;
+import meteordevelopment.meteorclient.utils.render.Render2DEngine;
 import net.minecraft.client.gui.Click;
 import net.minecraft.client.gui.DrawContext;
 import net.minecraft.client.gui.screen.Screen;
@@ -20,8 +21,11 @@ import net.minecraft.client.gui.screen.option.OptionsScreen;
 import net.minecraft.client.gui.screen.world.SelectWorldScreen;
 import net.minecraft.client.resource.language.I18n;
 import net.minecraft.text.Text;
+import net.minecraft.util.Formatting;
+import org.jetbrains.annotations.NotNull;
 import org.lwjgl.glfw.GLFW;
 
+import java.awt.Color;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -32,68 +36,44 @@ import java.util.Random;
 
 import static meteordevelopment.meteorclient.MeteorClient.mc;
 
-/**
- * Кастомное главное меню — порт MainMenuScreen (ThunderHack) под Meteor.
- *
- * Слева — changelog (текст с pastebin.com/v5WcmZNL, без кнопок),
- * по центру — логотип и кнопки колонкой вниз от середины экрана,
- * со скруглёнными углами.
- */
 public class MainMenuScreen extends Screen {
-    private static MainMenuScreen INSTANCE = new MainMenuScreen();
-
     private final List<MainMenuButton> buttons = new ArrayList<>();
     private final List<Star> stars = new ArrayList<>();
     private final Random random = new Random();
-
-    /** Ставится в true на время открытия ванильного TitleScreen ("Back to default menu"). */
     public static boolean confirm = false;
     public static int ticksActive;
 
-    /** Название меню (логотип). Меняется по клику — см. {@link EditMainMenuTitleScreen}. */
-    public static String title = "METEOR CLIENT";
+    public static String title = "NIGGAHACK";
 
-    // Changelog (текст с pastebin, подгружается один раз и просто рисуется слева)
     private static final String PASTEBIN_URL = "https://pastebin.com/raw/v5WcmZNL";
-    private static final int MAX_CHANGELOG_LINES = 12;
-    private final List<String> changelogLines = new ArrayList<>();
-    private boolean changelogLoading = true;
-    private boolean changelogFailed = false;
-
-    // Кнопки (ThunderHack-style): обычные 107x38, выход 222x38
-    private static final int BUTTON_WIDTH = 107;
-    private static final int BUTTON_EXIT_WIDTH = 222;
-    private static final int BUTTON_HEIGHT = 38;
-    private static final int BUTTON_GAP = 10;
-
-    // Скругление углов
-    private static final int CORNER_RADIUS = 5;
-    private static final List<int[]> CORNER_POINTS = new ArrayList<>();
-
-    static {
-        for (int dx = -CORNER_RADIUS; dx <= CORNER_RADIUS; dx++) {
-            for (int dy = -CORNER_RADIUS; dy <= CORNER_RADIUS; dy++) {
-                if (dx * dx + dy * dy <= CORNER_RADIUS * CORNER_RADIUS) {
-                    CORNER_POINTS.add(new int[] {dx, dy});
-                }
-            }
-        }
-    }
+    private static final List<String> changeLog = new ArrayList<>(List.of(
+        "[+] Added custom main menu",
+        "[*] Improved rendering engine",
+        "[/] Updated modules & themes",
+        "[+] Fixed crash bugs",
+        "[*] Performance improvements"
+    ));
+    private static boolean changelogLoaded = false;
 
     protected MainMenuScreen() {
-        super(Text.of("MainMenu"));
+        super(Text.of("THMainMenuScreen"));
+        INSTANCE = this;
 
         loadTitle();
 
-        buttons.add(new MainMenuButton(false, I18n.translate("menu.singleplayer").toUpperCase(Locale.ROOT), () -> mc.setScreen(new SelectWorldScreen(this))));
-        buttons.add(new MainMenuButton(false, I18n.translate("menu.multiplayer").toUpperCase(Locale.ROOT), () -> mc.setScreen(new MultiplayerScreen(this))));
-        buttons.add(new MainMenuButton(false, I18n.translate("menu.options").toUpperCase(Locale.ROOT).replace(".", ""), () -> mc.setScreen(new OptionsScreen(this, mc.options))));
-        buttons.add(new MainMenuButton(false, "MODULES", () -> mc.setScreen(GuiThemes.get().modulesScreen())));
-        buttons.add(new MainMenuButton(true, I18n.translate("menu.quit").toUpperCase(Locale.ROOT), mc::scheduleStop));
+        buttons.add(new MainMenuButton(-110, -70, I18n.translate("menu.singleplayer").toUpperCase(Locale.ROOT), () -> mc.setScreen(new SelectWorldScreen(this))));
+        buttons.add(new MainMenuButton(4, -70, I18n.translate("menu.multiplayer").toUpperCase(Locale.ROOT), () -> mc.setScreen(new MultiplayerScreen(this))));
+        buttons.add(new MainMenuButton(-110, -29, I18n.translate("menu.options")
+                .toUpperCase(Locale.ROOT)
+                .replace(".", ""), () -> mc.setScreen(new OptionsScreen(this, mc.options))));
+        buttons.add(new MainMenuButton(4, -29, "CLICKGUI", () -> mc.setScreen(GuiThemes.get().modulesScreen())));
+        buttons.add(new MainMenuButton(-110, 12, I18n.translate("menu.quit").toUpperCase(Locale.ROOT), mc::scheduleStop, true));
 
         generateStars();
         loadChangelog();
     }
+
+    private static MainMenuScreen INSTANCE = new MainMenuScreen();
 
     public static MainMenuScreen getInstance() {
         ticksActive = 0;
@@ -107,7 +87,6 @@ public class MainMenuScreen extends Screen {
         return MeteorClient.FOLDER.toPath().resolve("main_menu_title.txt");
     }
 
-    /** Загружает сохранённое название из файла (если есть). */
     private static void loadTitle() {
         try {
             Path file = titleFile();
@@ -119,10 +98,9 @@ public class MainMenuScreen extends Screen {
         }
     }
 
-    /** Устанавливает название и сохраняет его в файл. Пустая строка сбрасывает на дефолт. */
     public static void setTitle(String newTitle) {
         String t = newTitle == null ? "" : newTitle.trim();
-        if (t.isEmpty()) t = "METEOR CLIENT";
+        if (t.isEmpty()) t = "NIGGAHACK";
         title = t;
 
         try {
@@ -131,48 +109,39 @@ public class MainMenuScreen extends Screen {
         }
     }
 
-    /** Асинхронно тянет текст ченжлога с pastebin и складывает в {@link #changelogLines}. */
     private void loadChangelog() {
+        if (changelogLoaded) return;
         MeteorExecutor.execute(() -> {
             try {
                 String raw = Http.get(PASTEBIN_URL).sendString();
-                if (raw == null || raw.isBlank()) {
-                    changelogFailed = true;
-                    return;
+                if (raw != null && !raw.isBlank()) {
+                    List<String> lines = new ArrayList<>();
+                    for (String line : raw.split("\n")) {
+                        String l = line.replace("\r", "").stripTrailing();
+                        if (!l.isEmpty()) lines.add(l);
+                    }
+                    if (!lines.isEmpty()) {
+                        changeLog.clear();
+                        changeLog.addAll(lines);
+                        changelogLoaded = true;
+                    }
                 }
-
-                List<String> lines = new ArrayList<>();
-                for (String line : raw.split("\n")) {
-                    String l = line.replace("\r", "").stripTrailing();
-                    if (l.isEmpty()) continue;
-                    lines.add(l);
-                    if (lines.size() >= MAX_CHANGELOG_LINES) break;
-                }
-
-                if (lines.isEmpty()) {
-                    changelogFailed = true;
-                } else {
-                    changelogLines.clear();
-                    changelogLines.addAll(lines);
-                }
-            } catch (Exception e) {
-                changelogFailed = true;
-            } finally {
-                changelogLoading = false;
+            } catch (Exception ignored) {
             }
         });
     }
 
     private void generateStars() {
         stars.clear();
-        for (int i = 0; i < 200; i++) {
+        int starCount = 200;
+        for (int i = 0; i < starCount; i++) {
             stars.add(new Star(
-                random.nextFloat(),
-                random.nextFloat(),
-                0.5f + random.nextFloat() * 1.8f,
-                0.3f + random.nextFloat() * 1.2f,
-                (float) (random.nextFloat() * Math.PI * 2),
-                random
+                    random.nextFloat(),
+                    random.nextFloat(),
+                    0.5f + random.nextFloat() * 1.8f,
+                    0.3f + random.nextFloat() * 1.2f,
+                    (float) (random.nextFloat() * Math.PI * 2),
+                    random
             ));
         }
     }
@@ -215,242 +184,211 @@ public class MainMenuScreen extends Screen {
             int sy = (int) (star.y * height);
             int size = Math.max(1, Math.round(star.size));
 
-            int color = 0xFFFFFF | (alpha << 24);
+            int color = new Color(255, 255, 255, alpha).getRGB();
             context.fill(sx, sy, sx + size, sy + size, color);
 
             if (star.size > 1.6f && brightness > 0.75f) {
-                int glowColor = 0xFFFFFF | ((alpha / 3) << 24);
+                int glowColor = new Color(255, 255, 255, alpha / 3).getRGB();
                 context.fill(sx - 1, sy - 1, sx + size + 1, sy + size + 1, glowColor);
             }
         }
     }
 
     @Override
-    public void render(DrawContext context, int mouseX, int mouseY, float delta) {
-        int width = mc.getWindow().getScaledWidth();
-        int height = mc.getWindow().getScaledHeight();
-        int halfOfWidth = width / 2;
-        int halfOfHeight = height / 2;
+    public void render(@NotNull DrawContext context, int mouseX, int mouseY, float delta) {
+        float halfOfWidth = mc.getWindow().getScaledWidth() / 2f;
+        float halfOfHeight = mc.getWindow().getScaledHeight() / 2f;
+
+        float mainX = halfOfWidth - 120f;
+        float mainY = halfOfHeight - 80f;
+        float mainWidth = 240f;
+        float mainHeight = 140;
 
         renderStarrySky(context);
 
-        // Чанжлог слева — просто текст с pastebin, ничего открывать не надо
-        renderChangelog(context);
+        Render2DEngine.drawHudBase(context, mainX, mainY, mainWidth, mainHeight, 20);
 
-        // Кнопки колонкой вниз от середины экрана
-        int startX = (width - BUTTON_EXIT_WIDTH) / 2;
-        int startY = buttonColumnStartY();
-        int y = startY;
-        for (MainMenuButton button : buttons) {
-            int bw = button.isExit ? BUTTON_EXIT_WIDTH : BUTTON_WIDTH;
-            int bx = startX + (BUTTON_EXIT_WIDTH - bw) / 2; // каждая кнопка по центру колонки
-            button.render(context, mouseX, mouseY, bx, y, bw, BUTTON_HEIGHT);
-            y += BUTTON_HEIGHT + BUTTON_GAP;
-        }
+        buttons.forEach(b -> b.onRender(context, mouseX, mouseY));
 
-        // Логотип (x2 к ванильному шрифту, подсветка при наведении, клик меняет название)
-        boolean hoveredLogo = isHovered(mouseX, mouseY, halfOfWidth - 120, halfOfHeight - 150, 240, 44);
-        String logo = title;
-        int logoW = mc.textRenderer.getWidth(logo);
-        float logoScale = 2.0f;
-        if (logoW * logoScale > width - 280) {
-            logoScale = Math.max(0.8f, (width - 280f) / logoW); // не даём логотипу налезть на чанжлог
-        }
-        int logoX = (int) (halfOfWidth / logoScale - logoW / 2f);
-        int logoY = (int) ((halfOfHeight - 150) / logoScale);
+        boolean hoveredLogo = Render2DEngine.isHovered(mouseX, mouseY, (int) (halfOfWidth - 120), (int) (halfOfHeight - 130), 240, 50);
+
         context.getMatrices().pushMatrix();
+        float logoScale = 2.0f;
         context.getMatrices().scale(logoScale, logoScale);
-        context.drawText(mc.textRenderer, logo, logoX, logoY, hoveredLogo ? 0xE6FFFFFF : 0xB4FFFFFF, false);
+        String logoText = title;
+        int logoW = mc.textRenderer.getWidth(logoText);
+        float drawLogoX = (halfOfWidth / logoScale) - (logoW / 2f);
+        float drawLogoY = (halfOfHeight - 122f) / logoScale;
+        int logoColor = new Color(255, 255, 255, hoveredLogo ? 230 : 180).getRGB();
+        context.drawTextWithShadow(mc.textRenderer, logoText, (int) drawLogoX, (int) drawLogoY, logoColor);
         context.getMatrices().popMatrix();
 
-        // Подсказка: клик по названию открывает окно смены названия
-        String hint = "\u00abclick to rename\u00bb";
-        context.drawText(mc.textRenderer, hint,
-            halfOfWidth - mc.textRenderer.getWidth(hint) / 2, halfOfHeight - 122,
-            hoveredLogo ? 0x99FFFFFF : 0x66FFFFFF, false);
+        boolean hovered = Render2DEngine.isHovered(mouseX, mouseY, halfOfWidth - 50, halfOfHeight + 70, 100, 10);
 
-        // Возврат в ванильное меню (под последней кнопкой)
-        int backY = buttonColumnBottom() + 10;
-        boolean hovered = isHovered(mouseX, mouseY, halfOfWidth - 50, backY, 100, 10);
-        String back = "<-- Back to default menu";
-        context.drawText(mc.textRenderer, back,
-            halfOfWidth - mc.textRenderer.getWidth(back) / 2, backY,
-            hovered ? -1 : 0x99FFFFFF, false);
+        int backColor = hovered ? -1 : Render2DEngine.applyOpacity(-1, 0.6f);
+        String backText = "<-- Back to default menu";
+        int backW = mc.textRenderer.getWidth(backText);
+        context.drawTextWithShadow(mc.textRenderer, backText, (int) (halfOfWidth - backW / 2f), (int) (halfOfHeight + 70), backColor);
 
-        // Сборка внизу по центру
-        String build = "build " + (MeteorClient.ADDON != null && MeteorClient.ADDON.getCommit() != null
-            ? MeteorClient.ADDON.getCommit().substring(0, Math.min(7, MeteorClient.ADDON.getCommit().length()))
-            : "—");
-        context.drawText(mc.textRenderer, build,
-            halfOfWidth - mc.textRenderer.getWidth(build) / 2, height - 15, 0xFFB0B8D0, false);
+        onlineText:
+        {
+            String onlineUsers = String.format("online: %s%s", Formatting.DARK_GREEN, 1);
+            int textW = mc.textRenderer.getWidth(onlineUsers);
+            int textX = (int) (halfOfWidth - textW / 2f);
+            int textY = (int) (halfOfHeight * 2 - 15);
 
-        // Аддоны (справа сверху)
+            context.drawTextWithShadow(mc.textRenderer, onlineUsers, textX, textY, Color.GREEN.getRGB());
+
+            float bloomX = halfOfWidth - 10 - textW / 2f;
+            float bloomY = halfOfHeight * 2 - 11;
+
+            Render2DEngine.drawBloom(context, bloomX, bloomY, Render2DEngine.applyOpacity(Color.GREEN, 0.6f), 9f);
+            Render2DEngine.drawBloom(context, bloomX, bloomY, Render2DEngine.applyOpacity(Color.GREEN, (float) (0.5f + (Math.sin((double) System.currentTimeMillis() / 500)) / 2f)), 9f);
+        }
+
+        // Уменьшенный ченджлог: показываем только последние 5 записей с меньшим межстрочным интервалом
+        int offsetY = 10;
+        int maxLines = Math.min(5, changeLog.size());
+        int startIndex = Math.max(0, changeLog.size() - maxLines);
+
+        for (int i = startIndex; i < changeLog.size(); i++) {
+            String change = changeLog.get(i);
+            String prefix = getPrefix(change);
+            context.drawTextWithShadow(mc.textRenderer, prefix, 10, offsetY, Render2DEngine.applyOpacity(-1, 0.4f));
+            offsetY += 10; // Удобный межстрочный интервал
+        }
+
         int totalAddonsLoaded = AddonManager.ADDONS.size();
         String addonsText = "Addons Loaded: " + totalAddonsLoaded;
-        int textWidth = mc.textRenderer.getWidth(addonsText);
-        int textX = width - textWidth - 5;
-        context.drawText(mc.textRenderer, addonsText, textX, 5, 0xFFFFFFFF, false);
+        int screenWidth = mc.getWindow().getScaledWidth();
+        int textWidth = (int) mc.textRenderer.getWidth(addonsText);
+        int textX = screenWidth - textWidth - 5;
+        context.drawTextWithShadow(mc.textRenderer, addonsText, textX, 5, Color.WHITE.getRGB());
 
         int offset = 0;
         for (MeteorAddon addon : AddonManager.ADDONS) {
-            String addonName = addon.name + " |";
-            textWidth = mc.textRenderer.getWidth(addonName);
-            textX = width - textWidth - 5;
-            context.drawText(mc.textRenderer, addonName, textX, 13 + offset, 0xFFAAAAAA, false);
+            String addonLine = addon.name + Formatting.WHITE + " |";
+            textWidth = (int) mc.textRenderer.getWidth(addonLine);
+            textX = screenWidth - textWidth - 5;
+            context.drawTextWithShadow(mc.textRenderer, addonLine, textX, 13 + offset, Color.GRAY.getRGB());
             offset += 9;
         }
     }
 
-    /** Y начала колонки кнопок: от середины экрана вниз (с защитой от вылезания за край). */
-    private int buttonColumnStartY() {
-        int height = mc.getWindow().getScaledHeight();
-        int totalH = buttonColumnHeight();
-        int startY = height / 2;
-        int maxBottom = height - 42;
-        if (startY + totalH > maxBottom) startY = Math.max(20, maxBottom - totalH);
-        return startY;
-    }
-
-    private int buttonColumnHeight() {
-        return buttons.size() * BUTTON_HEIGHT + (buttons.size() - 1) * BUTTON_GAP;
-    }
-
-    private int buttonColumnBottom() {
-        return buttonColumnStartY() + buttonColumnHeight();
-    }
-
-    /** Панель changelog слева: заголовок + текст с pastebin. */
-    private void renderChangelog(DrawContext context) {
-        int panelX = 8;
-        int panelY = 8;
-        int panelW = 270;
-        int pad = 10;
-
-        int lines = changelogLoading ? 1 : (changelogFailed || changelogLines.isEmpty() ? 2 : Math.min(changelogLines.size(), MAX_CHANGELOG_LINES));
-        int panelH = 31 + lines * 10 + 10;
-
-        drawRoundedBorder(context, panelX, panelY, panelW, panelH, 0xFF3A5CFF, 0xCC0A0E1F);
-
-        int contentX = panelX + pad;
-        context.drawText(mc.textRenderer, "Changelog", contentX, panelY + 7, 0xFFE0E7FF, true);
-
-        int y = panelY + 21;
-        if (changelogLoading) {
-            context.drawText(mc.textRenderer, "Loading...", contentX, y, 0xFF8FA3C8, false);
-        } else if (changelogFailed || changelogLines.isEmpty()) {
-            context.drawText(mc.textRenderer, "Failed to load", contentX, y, 0xFF8FA3C8, false);
-            context.drawText(mc.textRenderer, "pastebin.com/v5WcmZNL", contentX, y + 10, 0xFF6A6F8C, false);
-        } else {
-            int maxChars = (panelW - pad * 2) / 6; // ~6px на символ ванильного шрифта
-            for (int i = 0; i < Math.min(changelogLines.size(), MAX_CHANGELOG_LINES); i++) {
-                context.drawText(mc.textRenderer, truncate(changelogLines.get(i), maxChars), contentX, y, 0xFFE8EEFF, false);
-                y += 10;
-            }
+    private static @NotNull String getPrefix(@NotNull String change) {
+        String prefix = "";
+        if (change.contains("[+]")) {
+            change = change.replace("[+] ", "");
+            prefix = Formatting.GREEN + "[+] " + Formatting.RESET;
+        } else if (change.contains("[-]")) {
+            change = change.replace("[-] ", "");
+            prefix = Formatting.RED + "[-] " + Formatting.RESET;
+        } else if (change.contains("[/]")) {
+            change = change.replace("[/] ", "");
+            prefix = Formatting.LIGHT_PURPLE + "[/] " + Formatting.RESET;
+        } else if (change.contains("[*]")) {
+            change = change.replace("[*] ", "");
+            prefix = Formatting.GOLD + "[*] " + Formatting.RESET;
         }
+        return prefix + change;
     }
 
     @Override
     public boolean mouseClicked(Click click, boolean doubled) {
         if (click.button() == GLFW.GLFW_MOUSE_BUTTON_LEFT) {
+            float halfOfWidth = mc.getWindow().getScaledWidth() / 2f;
+            float halfOfHeight = mc.getWindow().getScaledHeight() / 2f;
             int mouseX = (int) click.x();
             int mouseY = (int) click.y();
 
-            int startX = (mc.getWindow().getScaledWidth() - BUTTON_EXIT_WIDTH) / 2;
-            int y = buttonColumnStartY();
-            for (MainMenuButton button : buttons) {
-                int bw = button.isExit ? BUTTON_EXIT_WIDTH : BUTTON_WIDTH;
-                int bx = startX + (BUTTON_EXIT_WIDTH - bw) / 2;
-                button.onClick(mouseX, mouseY, bx, y, bw, BUTTON_HEIGHT);
-                y += BUTTON_HEIGHT + BUTTON_GAP;
-            }
+            buttons.forEach(b -> b.onClick(mouseX, mouseY));
 
-            int halfOfWidth = mc.getWindow().getScaledWidth() / 2;
-            int halfOfHeight = mc.getWindow().getScaledHeight() / 2;
-
-            // Клик по названию — окно смены названия
-            if (isHovered(mouseX, mouseY, halfOfWidth - 120, halfOfHeight - 150, 240, 44)) {
-                mc.setScreen(new EditMainMenuTitleScreen(GuiThemes.get()));
-            }
-
-            // Возврат в ванильное меню
-            if (isHovered(mouseX, mouseY, halfOfWidth - 50, buttonColumnBottom() + 10, 100, 10)) {
+            if (Render2DEngine.isHovered(mouseX, mouseY, halfOfWidth - 50, halfOfHeight + 70, 100, 10)) {
                 confirm = true;
                 mc.setScreen(new TitleScreen());
                 confirm = false;
+                return true;
+            }
+
+            if (Render2DEngine.isHovered(mouseX, mouseY, (int) (halfOfWidth - 120), (int) (halfOfHeight - 130), 240, 50)) {
+                mc.setScreen(new EditMainMenuTitleScreen(GuiThemes.get()));
+                return true;
             }
         }
 
         return super.mouseClicked(click, doubled);
     }
 
-    private static boolean isHovered(double mouseX, double mouseY, int x, int y, int w, int h) {
-        return mouseX >= x && mouseX <= x + w && mouseY >= y && mouseY <= y + h;
-    }
+    public boolean mouseClicked(double mouseX, double mouseY, int button) {
+        if (button == GLFW.GLFW_MOUSE_BUTTON_LEFT) {
+            float halfOfWidth = mc.getWindow().getScaledWidth() / 2f;
+            float halfOfHeight = mc.getWindow().getScaledHeight() / 2f;
 
-    /** Скруглённый прямоугольник: центральные полосы + попиксельные углы. */
-    private static void drawRoundedRect(DrawContext ctx, int x, int y, int w, int h, int color) {
-        ctx.fill(x + CORNER_RADIUS, y, x + w - CORNER_RADIUS, y + h, color);
-        ctx.fill(x, y + CORNER_RADIUS, x + w, y + h - CORNER_RADIUS, color);
+            buttons.forEach(b -> b.onClick((int) mouseX, (int) mouseY));
 
-        for (int[] p : CORNER_POINTS) {
-            int dx = p[0];
-            int dy = p[1];
-
-            // Верхний левый
-            ctx.fill(x + CORNER_RADIUS + dx, y + CORNER_RADIUS + dy, x + CORNER_RADIUS + dx + 1, y + CORNER_RADIUS + dy + 1, color);
-            // Верхний правый
-            ctx.fill(x + w - CORNER_RADIUS - 1 + dx, y + CORNER_RADIUS + dy, x + w - CORNER_RADIUS + dx, y + CORNER_RADIUS + dy + 1, color);
-            // Нижний левый
-            ctx.fill(x + CORNER_RADIUS + dx, y + h - CORNER_RADIUS - 1 + dy, x + CORNER_RADIUS + dx + 1, y + h - CORNER_RADIUS + dy, color);
-            // Нижний правый
-            ctx.fill(x + w - CORNER_RADIUS - 1 + dx, y + h - CORNER_RADIUS - 1 + dy, x + w - CORNER_RADIUS + dx, y + h - CORNER_RADIUS + dy, color);
+            if (Render2DEngine.isHovered(mouseX, mouseY, halfOfWidth - 50, halfOfHeight + 70, 100, 10)) {
+                confirm = true;
+                mc.setScreen(new TitleScreen());
+                confirm = false;
+                return true;
+            }
         }
+        return false;
     }
 
-    /** Рамка со скруглёнными углами: внешний слой цвета border, внутри — заливка bg. */
-    private static void drawRoundedBorder(DrawContext ctx, int x, int y, int w, int h, int border, int bg) {
-        drawRoundedRect(ctx, x, y, w, h, border);
-        drawRoundedRect(ctx, x + 1, y + 1, w - 2, h - 2, bg);
-    }
-
-    private static String truncate(String s, int maxChars) {
-        if (s.length() <= maxChars) return s;
-        return s.substring(0, maxChars - 1) + "…";
-    }
-
-    /** Кнопка главного меню; размеры — как в ThunderHack (107x38, выход 222x38). */
-    private static class MainMenuButton {
-        private final boolean isExit;
+    public static class MainMenuButton {
+        private final int x, y;
         private final String text;
         private final Runnable action;
+        private final boolean isExit;
 
-        MainMenuButton(boolean isExit, String text, Runnable action) {
-            this.isExit = isExit;
+        public MainMenuButton(int x, int y, String text, Runnable action) {
+            this(x, y, text, action, false);
+        }
+
+        public MainMenuButton(int x, int y, String text, Runnable action, boolean isExit) {
+            this.x = x;
+            this.y = y;
             this.text = text;
             this.action = action;
+            this.isExit = isExit;
         }
 
-        void render(DrawContext context, int mouseX, int mouseY, int x, int y, int w, int h) {
-            boolean hovered = mouseX >= x && mouseX <= x + w && mouseY >= y && mouseY <= y + h;
+        public void onRender(DrawContext context, int mouseX, int mouseY) {
+            float halfOfWidth = mc.getWindow().getScaledWidth() / 2f;
+            float halfOfHeight = mc.getWindow().getScaledHeight() / 2f;
+            int bx = (int) (halfOfWidth + x);
+            int by = (int) (halfOfHeight + y);
+            int bw = isExit ? 220 : 106;
+            int bh = 38;
 
-            int bg = hovered ? 0xE61A2A55 : 0xE6101830;
-            int border = hovered ? 0xFF6A8CFF : (isExit ? 0xFFB03A3A : 0xFF3A5CFF);
+            boolean hovered = Render2DEngine.isHovered(mouseX, mouseY, bx, by, bw, bh);
 
-            drawRoundedBorder(context, x, y, w, h, border, bg);
+            int bg = hovered ? 0xCC1A233D : 0x990E1424;
+            int border = hovered ? 0xFF5874E8 : (isExit ? 0xFF9E2A2B : 0xFF243358);
 
-            int textX = x + (w - mc.textRenderer.getWidth(text)) / 2;
-            int textY = y + (h - mc.textRenderer.fontHeight) / 2 + 1;
-            context.drawText(mc.textRenderer, text, textX, textY, 0xFFFFFFFF, false);
+            Render2DEngine.drawRoundedBorder(context, bx, by, bw, bh, 6, border, bg);
+
+            int textW = mc.textRenderer.getWidth(text);
+            int textX = bx + (bw - textW) / 2;
+            int textY = by + (bh - mc.textRenderer.fontHeight) / 2 + 1;
+            context.drawTextWithShadow(mc.textRenderer, text, textX, textY, hovered ? 0xFFFFFFFF : 0xFFD8E2FF);
         }
 
-        void onClick(int mouseX, int mouseY, int x, int y, int w, int h) {
-            if (mouseX >= x && mouseX <= x + w && mouseY >= y && mouseY <= y + h) {
+        public void onClick(int mouseX, int mouseY) {
+            float halfOfWidth = mc.getWindow().getScaledWidth() / 2f;
+            float halfOfHeight = mc.getWindow().getScaledHeight() / 2f;
+            int bx = (int) (halfOfWidth + x);
+            int by = (int) (halfOfHeight + y);
+            int bw = isExit ? 220 : 106;
+            int bh = 38;
+
+            if (Render2DEngine.isHovered(mouseX, mouseY, bx, by, bw, bh)) {
                 action.run();
             }
         }
     }
 
-    /** Звезда: координаты нормализованы 0..1, дрейф + мерцание + wrap-around. */
     private static class Star {
         float x, y;
         final float size;
@@ -480,7 +418,7 @@ public class MainMenuScreen extends Screen {
             x += driftX;
             y += driftY;
 
-            // Wrap around — когда звезда уходит за границу, появляется с другой стороны
+            // Wrap around - когда звезда уходит за границу, появляется с другой стороны
             if (x > 1.0f) x -= 1.0f;
             if (x < 0.0f) x += 1.0f;
             if (y > 1.0f) y -= 1.0f;
