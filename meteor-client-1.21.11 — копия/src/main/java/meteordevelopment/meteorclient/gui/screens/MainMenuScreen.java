@@ -336,59 +336,6 @@ public class MainMenuScreen extends Screen {
         return false;
     }
 
-    public static class MainMenuButton {
-        private final int x, y;
-        private final String text;
-        private final Runnable action;
-        private final boolean isExit;
-
-        public MainMenuButton(int x, int y, String text, Runnable action) {
-            this(x, y, text, action, false);
-        }
-
-        public MainMenuButton(int x, int y, String text, Runnable action, boolean isExit) {
-            this.x = x;
-            this.y = y;
-            this.text = text;
-            this.action = action;
-            this.isExit = isExit;
-        }
-
-        public void onRender(DrawContext context, int mouseX, int mouseY) {
-            float halfOfWidth = mc.getWindow().getScaledWidth() / 2f;
-            float halfOfHeight = mc.getWindow().getScaledHeight() / 2f;
-            int bx = (int) (halfOfWidth + x);
-            int by = (int) (halfOfHeight + y);
-            int bw = isExit ? 220 : 106;
-            int bh = 38;
-
-            boolean hovered = Render2DEngine.isHovered(mouseX, mouseY, bx, by, bw, bh);
-
-            int bg = hovered ? 0xCC1A233D : 0x990E1424;
-            int border = hovered ? 0xFF5874E8 : (isExit ? 0xFF9E2A2B : 0xFF243358);
-
-            Render2DEngine.drawRoundedBorder(context, bx, by, bw, bh, 6, border, bg);
-
-            int textW = mc.textRenderer.getWidth(text);
-            int textX = bx + (bw - textW) / 2;
-            int textY = by + (bh - mc.textRenderer.fontHeight) / 2 + 1;
-            context.drawTextWithShadow(mc.textRenderer, text, textX, textY, hovered ? 0xFFFFFFFF : 0xFFD8E2FF);
-        }
-
-        public void onClick(int mouseX, int mouseY) {
-            float halfOfWidth = mc.getWindow().getScaledWidth() / 2f;
-            float halfOfHeight = mc.getWindow().getScaledHeight() / 2f;
-            int bx = (int) (halfOfWidth + x);
-            int by = (int) (halfOfHeight + y);
-            int bw = isExit ? 220 : 106;
-            int bh = 38;
-
-            if (Render2DEngine.isHovered(mouseX, mouseY, bx, by, bw, bh)) {
-                action.run();
-            }
-        }
-    }
-
     private static class Star {
         float x, y;
         final float size;
